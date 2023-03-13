@@ -9,8 +9,14 @@ documentation = "https://docs.rs/docker-image-reference"
 repository = "https://github.com/mzohreva/docker-image-reference"
 readme = "README.md"
 
+[dev-dependencies]
+pretty_env_logger = "0.4.0"
+ctor = "0.1.26"
+
+
 [dependencies]
 anyhow = "1.0"
 const_format = "0.2"
 lazy_static = "1.4"
 regex = "1.0"
+log = "0.4.17"

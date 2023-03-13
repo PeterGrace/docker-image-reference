@@ -1,3 +1,8 @@
+mod tests;
+
+#[macro_use]
+extern crate log;
+
 use anyhow::{bail, Result};
 use const_format::concatcp;
 use lazy_static::lazy_static;
@@ -49,8 +54,12 @@ const DIGEST_HEX: &str = r#"([0-9a-fA-F]{32,})"#;
 
 lazy_static! {
     static ref NAME_REGEX: Regex = Regex::new(NAME).unwrap();
+    static ref DOMAIN_REGEX: Regex = Regex::new(r"^((?:[_a-z0-9](?:[_a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)?(:(\d{1,5}))?)/").unwrap();
     static ref COLON_TAG_REGEX: Regex = Regex::new(COLON_TAG).unwrap();
     static ref AT_DIGEST_REGEX: Regex = Regex::new(AT_DIGEST).unwrap();
+}
+trait FromStr<'a>: Sized {
+    fn from_str(s: &'a str) -> Result<Self>;
 }
 
 /// Similar to regular FromStr but returns unused trailing characters.
@@ -73,6 +82,7 @@ trait FromStrExtended<'a>: Sized {
 /// [`Reference::from_str()`]: #method.from_str
 #[derive(PartialEq)]
 pub struct Reference<'r> {
+    registry: Option<Registry<'r>>,
     name: &'r str,
     tag: Option<&'r str>,
     digest: Option<Digest<'r>>,
@@ -99,7 +109,7 @@ impl<'r> Reference<'r> {
     /// ```
     /// use docker_image_reference::Reference;
     /// let r = Reference::from_str("index.docker.io/library/ubuntu:latest").unwrap();
-    /// assert_eq!(r.name(), "index.docker.io/library/ubuntu");
+    /// assert_eq!(r.name(), "library/ubuntu");
     /// ```
     pub fn name(&self) -> &'r str {
         self.name
@@ -148,7 +158,8 @@ impl<'r> Reference<'r> {
 
 impl<'a> FromStrExtended<'a> for Reference<'a> {
     fn from_str_ext(s: &'a str) -> Result<(Self, &'a str)> {
-        let (name, s) = match NAME_REGEX.find(s) {
+        let mut name = "";
+        let (name_str, s) = match NAME_REGEX.find(s) {
             Some(m) => (m.as_str(), &s[m.end()..]),
             None => bail!("no name found in `{}`", s),
         };
@@ -166,10 +177,27 @@ impl<'a> FromStrExtended<'a> for Reference<'a> {
             }
             _ => (None, s),
         };
+        let mut registry: Option<Registry> = None;
+        if name_str.find("/").is_some() {
+            registry = match DOMAIN_REGEX.find(name_str) {
+                Some(m) => Some(Registry::from_str(m.as_str())?),
+                None => None
+            };
+            if registry.is_some() {
+                (_, name) = name_str.split_once('/').unwrap();
+                info!("{:#?}", name);
+            }
+            else {
+                name = name_str;
+            }
+        } else {
+            name = name_str;
+        }
+        info!("{:#?}", DOMAIN);
         if s != "" {
             bail!("unrecognized trailing characters: `{}`", s);
         }
-        Ok((Reference { name, tag, digest }, ""))
+        Ok((Reference { registry, name, tag, digest }, ""))
     }
 }
 
@@ -200,7 +228,7 @@ impl<'a> FromStrExtended<'a> for Tag<'a> {
 }
 
 #[derive(PartialEq)]
-struct Digest<'r> {
+pub struct Digest<'r> {
     algorithm: &'r str,
     digest_hex: &'r str,
 }
@@ -219,138 +247,25 @@ impl<'a> FromStrExtended<'a> for Digest<'a> {
         Ok((Digest { algorithm, digest_hex }, s))
     }
 }
+#[derive(PartialEq)]
+pub struct Registry<'r> {
+    hostname: &'r str,
+    port: Option<&'r str>,
+}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fmt::Display;
-
-    struct Test<'t, T> {
-        input: &'t str,
-        want: Result<(T, &'t str), String>,
-    }
-
-    impl<'t, T: FromStrExtended<'t> + PartialEq + Display> Test<'t, T> {
-        fn run(self) -> Result<(), String> {
-            let res = T::from_str_ext(self.input);
-            match (self.want, res) {
-                (Ok((expected_value, expected_unused)), Ok((value, unused))) => {
-                    if value == expected_value && unused == expected_unused {
-                        Ok(())
-                    } else {
-                        let mut err = String::new();
-                        if value != expected_value {
-                            err.push_str(&format!("expected value `{}` got `{}`. ", expected_value, value));
-                        }
-                        if unused != expected_unused {
-                            err.push_str(&format!("expected unused `{}` got `{}`.", expected_unused, unused));
-                        }
-                        Err(err)
-                    }
-                }
-                (Err(expected_err), Err(err)) => {
-                    if expected_err == err.to_string() {
-                        Ok(())
-                    } else {
-                        Err(format!("expected error `{}`, got different error `{}`", expected_err, err))
-                    }
-                }
-                (Ok(_), Err(_)) => Err(format!("expected ok, got error")),
-                (Err(_), Ok(_)) => Err(format!("expected error, got ok")),
-            }
+impl<'a> FromStr<'a> for Registry<'a> {
+    fn from_str(s: &'a str) -> Result<Self> {
+        let caps = DOMAIN_REGEX.captures(s).unwrap();
+        let hostname_str = caps.get(1).unwrap().as_str();
+        let mut port = None;
+        let mut hostname = "";
+        if hostname_str.contains(':') {
+            hostname = caps.get(1).unwrap().as_str().split(':').next().unwrap();
+            port = caps.get(1).unwrap().as_str().split(':').next_back();
+        } else {
+            hostname = caps.get(1).unwrap().as_str();
         }
-    }
-
-    #[test]
-    fn reference_grammar() {
-        let tests = vec![
-            Test {
-                input: "ubuntu:16.04",
-                want: Ok((
-                    Reference {
-                        name: "ubuntu",
-                        tag: Some("16.04"),
-                        digest: None,
-                    },
-                    "",
-                )),
-            },
-            Test {
-                input: "example.com/user-name/ubuntu:16.04-lts",
-                want: Ok((
-                    Reference {
-                        name: "example.com/user-name/ubuntu",
-                        tag: Some("16.04-lts"),
-                        digest: None,
-                    },
-                    "",
-                )),
-            },
-            Test {
-                input: "example.com:8080/user-name/ubuntu:16.04-lts",
-                want: Ok((
-                    Reference {
-                        name: "example.com:8080/user-name/ubuntu",
-                        tag: Some("16.04-lts"),
-                        digest: None,
-                    },
-                    "",
-                )),
-            },
-            Test {
-                input: "example.com:8080/user-name/ubuntu",
-                want: Ok((
-                    Reference {
-                        name: "example.com:8080/user-name/ubuntu",
-                        tag: None,
-                        digest: None,
-                    },
-                    "",
-                )),
-            },
-            Test {
-                input: "example.com:8080/user___name/ubuntu",
-                want: Err("unrecognized trailing characters: `___name/ubuntu`".to_owned()),
-            },
-            Test {
-                input: "example.com:8080/user-name/ubuntu:φ",
-                want: Err("no tag found in `:φ`".to_owned()),
-            },
-            Test {
-                input: "example.com:8080/user-name/ubuntu@φ",
-                want: Err("no digest found in `@φ`".to_owned()),
-            },
-            Test {
-                input: "αβγδ",
-                want: Err("no name found in `αβγδ`".to_owned()),
-            },
-        ];
-
-        for t in tests {
-            match t.run() {
-                Ok(()) => {}
-                Err(e) => panic!("{}", e),
-            }
-        }
-    }
-
-    #[test]
-    fn public_api() {
-        let r = Reference::from_str("user/image:tag").unwrap();
-        assert_eq!(r.name(), "user/image");
-        assert_eq!(r.tag(), Some("tag"));
-        assert_eq!(r.digest_algorithm(), None);
-        assert_eq!(r.digest_hex(), None);
-        assert_eq!(r.to_string(), "user/image:tag".to_owned());
-
-        let r = Reference::from_str("user/image:1.2.3-abc@sha256:9d78ad0da0e88ca15da5735b9f70064d3099ac0a8cd9dc839795789400a38e42").unwrap();
-        assert_eq!(r.name(), "user/image");
-        assert_eq!(r.tag(), Some("1.2.3-abc"));
-        assert_eq!(r.digest_algorithm(), Some("sha256"));
-        assert_eq!(r.digest_hex(), Some("9d78ad0da0e88ca15da5735b9f70064d3099ac0a8cd9dc839795789400a38e42"));
-        assert_eq!(
-            r.to_string(),
-            "user/image:1.2.3-abc@sha256:9d78ad0da0e88ca15da5735b9f70064d3099ac0a8cd9dc839795789400a38e42".to_owned()
-        );
+        info!("{:#?} {:#?}", hostname, port);
+        Ok(Registry { hostname, port })
     }
 }
