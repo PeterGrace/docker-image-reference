@@ -1,6 +1,5 @@
 mod tests;
 
-#[macro_use]
 extern crate log;
 
 use anyhow::{bail, Result};
@@ -151,6 +150,22 @@ impl<'r> Reference<'r> {
         self.digest.as_ref().map(|d| d.algorithm)
     }
 
+    pub fn registry_name(&self) -> Option<&'r str> {
+        if self.registry.is_some() {
+            return Some(self.registry.as_ref().unwrap().hostname)
+        } else {
+            None
+        }
+    }
+    pub fn registry_port(&self) -> Option<&'r str> {
+        if self.registry.clone().is_some() {
+            if self.registry.clone().unwrap().port.is_some() {
+                return self.registry.as_ref().unwrap().port
+            }
+        }
+       return None
+    }
+
     pub fn digest_hex(&self) -> Option<&'r str> {
         self.digest.as_ref().map(|d| d.digest_hex)
     }
@@ -185,18 +200,19 @@ impl<'a> FromStrExtended<'a> for Reference<'a> {
             };
             if registry.is_some() {
                 (_, name) = name_str.split_once('/').unwrap();
-                info!("{:#?}", name);
             }
             else {
                 name = name_str;
             }
         } else {
             name = name_str;
+
         }
-        info!("{:#?}", DOMAIN);
+
         if s != "" {
             bail!("unrecognized trailing characters: `{}`", s);
         }
+
         Ok((Reference { registry, name, tag, digest }, ""))
     }
 }
@@ -247,7 +263,7 @@ impl<'a> FromStrExtended<'a> for Digest<'a> {
         Ok((Digest { algorithm, digest_hex }, s))
     }
 }
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct Registry<'r> {
     hostname: &'r str,
     port: Option<&'r str>,
@@ -265,7 +281,6 @@ impl<'a> FromStr<'a> for Registry<'a> {
         } else {
             hostname = caps.get(1).unwrap().as_str();
         }
-        info!("{:#?} {:#?}", hostname, port);
         Ok(Registry { hostname, port })
     }
 }

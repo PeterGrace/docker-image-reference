@@ -4,7 +4,6 @@ fn init() { pretty_env_logger::init(); }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::fmt::Display;
     use crate::{FromStrExtended, Reference, Registry};
 
@@ -64,7 +63,7 @@ mod tests {
                 want: Ok((
                     Reference {
                         registry: None,
-                        name: "ubuntu",
+                        name: "library/ubuntu",
                         tag: Some("test2"),
                         digest: None,
                     },
